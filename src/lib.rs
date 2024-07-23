@@ -1,12 +1,10 @@
 #![deny(clippy::all)]
 
-use std::{thread, vec};
-
 use napi::*;
 use std::net::TcpStream;
-use threadsafe_function::{
-  ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
-};
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex};
+use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 
 #[macro_use]
@@ -14,7 +12,7 @@ extern crate napi_derive;
 
 #[napi]
 pub struct CreateWebSocketConnectionResult {
-  socket: WebSocket<MaybeTlsStream<TcpStream>>,
+  socket: Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
 }
 
 #[napi(object)]
@@ -30,13 +28,14 @@ pub struct CreateConnectionCallbacks {
 impl CreateWebSocketConnectionResult {
   #[napi]
   pub fn send(&mut self, payload: String) {
-    self.socket.send(Message::Text(payload)).unwrap();
+    self.socket.lock().unwrap().send(Message::Text(payload)).unwrap();
   }
 }
 
 #[napi]
 pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketConnectionResult {
-  let (mut socket, _) = connect("ws://localhost:3012").expect("Can't connect");
+  let socket = Arc::new(Mutex::new(connect(options.url).unwrap().0));
+  let socket_thread = Arc::clone(&socket);
 
   let on_message_tsfn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled> = options
     .on_message
@@ -72,17 +71,10 @@ pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketC
     ThreadsafeFunctionCallMode::NonBlocking,
   );
 
-  socket
-    .send(Message::Text("Hello WebSocket".into()))
-    .unwrap();
-
-  on_message_tsfn.call(
-    Ok("XD".to_string()),
-    ThreadsafeFunctionCallMode::NonBlocking,
-  );
-
-  thread::spawn(move || loop {
-    match socket.read() {
+  std::thread::spawn(move || {
+    let mut socket_thread = socket_thread.lock().unwrap();
+    
+    match socket_thread.read() {
       Ok(msg) => {
         match msg {
           Message::Text(text) => {
@@ -97,7 +89,6 @@ pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketC
               Ok("Connection closed".to_string()),
               ThreadsafeFunctionCallMode::NonBlocking,
             );
-            return;
           }
           _ => {}
         }
@@ -105,10 +96,11 @@ pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketC
       Err(e) => {
         on_error_tsfn.call(Ok(e.to_string()), ThreadsafeFunctionCallMode::NonBlocking);
         println!("Error: {}", e);
-        return;
       }
     }
   });
-
-  CreateWebSocketConnectionResult { socket }
+  
+  CreateWebSocketConnectionResult {
+    socket,
+  }
 }
