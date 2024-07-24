@@ -7,6 +7,7 @@ test('createConnection', (t) => {
     createConnection({
       onMessage: (...message) => {
         console.log("message", ...message); // buildea. q deberia dar?
+        c.send('xd');
       },
       onClose: () => {
         console.log("close");
@@ -19,7 +20,14 @@ test('createConnection', (t) => {
       },
       url: 'wss://echo-websocket.hoppscotch.io'
     });
-  c.print()
+
+  console.log(c.send.toString())
+
+  /*setTimeout(() => {
+    c.send('xd')
+    console.log('Message')
+  }, 1000)*/
+
   t.is(true, true);
 });
 

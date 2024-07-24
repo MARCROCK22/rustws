@@ -1,9 +1,8 @@
 #![deny(clippy::all)]
 
 use napi::*;
-use std::net::TcpStream;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc::{self, Sender, Receiver}};
 use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 
@@ -12,7 +11,7 @@ extern crate napi_derive;
 
 #[napi]
 pub struct CreateWebSocketConnectionResult {
-  socket: Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
+  sender: Arc<Mutex<Sender<String>>>,
 }
 
 #[napi(object)]
@@ -28,14 +27,16 @@ pub struct CreateConnectionCallbacks {
 impl CreateWebSocketConnectionResult {
   #[napi]
   pub fn send(&mut self, payload: String) {
-    self.socket.lock().unwrap().send(Message::Text(payload)).unwrap();
+    self.sender.lock().unwrap().send(payload).unwrap();
   }
 }
 
 #[napi]
 pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketConnectionResult {
+  let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
   let socket = Arc::new(Mutex::new(connect(options.url).unwrap().0));
   let socket_thread = Arc::clone(&socket);
+  let sender = Arc::new(Mutex::new(tx));
 
   let on_message_tsfn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled> = options
     .on_message
@@ -72,35 +73,34 @@ pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketC
   );
 
   std::thread::spawn(move || loop {
+    if let Ok(payload) = rx.try_recv() {
+      let mut socket_thread = socket_thread.lock().unwrap();
+      socket_thread.write(Message::Text(payload)).unwrap();
+    }
+
     let mut socket_thread = socket_thread.lock().unwrap();
-    
     match socket_thread.read() {
-      Ok(msg) => {
-        match msg {
-          Message::Text(text) => {
-            // Err(napi::Error::new(napi::Status::Cancelled, ":v")),
-            on_message_tsfn.call(Ok(text), ThreadsafeFunctionCallMode::NonBlocking);
-          }
-          Message::Binary(bin) => {
-            println!("Binary received: {:?}", bin);
-          }
-          Message::Close(_) => {
-            on_close_tsfn.call(
-              Ok("Connection closed".to_string()),
-              ThreadsafeFunctionCallMode::NonBlocking,
-            );
-          }
-          _ => {}
+      Ok(msg) => match msg {
+        Message::Text(text) => {
+          on_message_tsfn.call(Ok(text), ThreadsafeFunctionCallMode::NonBlocking);
         }
-      }
+        Message::Binary(bin) => {
+          println!("Binary received: {:?}", bin);
+        }
+        Message::Close(_) => {
+          on_close_tsfn.call(
+            Ok("Connection closed".to_string()),
+            ThreadsafeFunctionCallMode::NonBlocking,
+          );
+        }
+        _ => {}
+      },
       Err(e) => {
         on_error_tsfn.call(Ok(e.to_string()), ThreadsafeFunctionCallMode::NonBlocking);
         println!("Error: {}", e);
       }
     }
   });
-  
-  CreateWebSocketConnectionResult {
-    socket,
-  }
+
+  CreateWebSocketConnectionResult { sender }
 }
