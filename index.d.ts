@@ -10,7 +10,7 @@ export interface CreateConnectionCallbacks {
   onClose: (...args: any[]) => any
   url: string
 }
-export declare function createConnection(options: CreateConnectionCallbacks): void
+export declare function createConnection(options: CreateConnectionCallbacks): CreateWebSocketConnectionResult
 export declare class CreateWebSocketConnectionResult {
   send(payload: string): void
 }

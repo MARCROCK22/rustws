@@ -71,7 +71,7 @@ pub fn create_connection(options: CreateConnectionCallbacks) -> CreateWebSocketC
     ThreadsafeFunctionCallMode::NonBlocking,
   );
 
-  std::thread::spawn(move || {
+  std::thread::spawn(move || loop {
     let mut socket_thread = socket_thread.lock().unwrap();
     
     match socket_thread.read() {
